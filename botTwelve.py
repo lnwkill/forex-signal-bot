@@ -15,11 +15,13 @@ TWELVE_DATA_KEY = "a624ba50c97f454f92c58f3cf8de1be9"
 
 PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "XAU/USD"]
 
-# Timezone ไทย
 TZ_THAI = pytz.timezone('Asia/Bangkok')
 
 # เก็บสัญญาณที่ส่งไปแล้ว (ป้องกันส่งซ้ำ)
 sent_signals = {}
+
+# Lock ป้องกันรันซ้อน
+is_running = False
 
 # ============ สี Theme ============
 COLORS = {
@@ -131,7 +133,7 @@ def analyze_signal(df):
     
     signals = []
     
-    # EMA Crossover (เช็คเฉพาะจุด cross)
+    # EMA Crossover
     if ema9.iloc[-2] < ema21.iloc[-2] and ema9.iloc[-1] > ema21.iloc[-1]:
         signals.append(("BUY", "EMA 9/21 Golden Cross"))
     elif ema9.iloc[-2] > ema21.iloc[-2] and ema9.iloc[-1] < ema21.iloc[-1]:
@@ -143,7 +145,7 @@ def analyze_signal(df):
     elif rsi.iloc[-2] <= 70 and curr_rsi > 70:
         signals.append(("SELL", f"RSI Overbought ({curr_rsi:.1f})"))
     
-    # MACD Crossover
+    # MACD
     if macd_line.iloc[-2] < signal_line.iloc[-2] and macd_line.iloc[-1] > signal_line.iloc[-1]:
         signals.append(("BUY", "MACD Bullish Cross"))
     elif macd_line.iloc[-2] > signal_line.iloc[-2] and macd_line.iloc[-1] < signal_line.iloc[-1]:
@@ -166,19 +168,16 @@ def create_chart(df, pair, signal_type, reasons, ema9, ema21, macd_line, signal_
     
     x = range(len(df))
     
-    # กราฟราคา + EMA
     ax1 = axes[0]
     ax1.plot(x, df["close"].values, label="Price", color=COLORS["text"], linewidth=1.5)
     ax1.plot(x, ema9.values, label="EMA 9", color=COLORS["ema_fast"], linewidth=1)
     ax1.plot(x, ema21.values, label="EMA 21", color=COLORS["ema_slow"], linewidth=1)
     
-    # Candlestick
     for i in range(len(df)):
         color = COLORS["candle_up"] if df["close"].iloc[i] >= df["open"].iloc[i] else COLORS["candle_down"]
         ax1.plot([i, i], [df["low"].iloc[i], df["high"].iloc[i]], color=color, linewidth=1)
         ax1.plot([i, i], [df["open"].iloc[i], df["close"].iloc[i]], color=color, linewidth=3)
     
-    # จุดสัญญาณ
     marker_color = COLORS["candle_up"] if signal_type == "BUY" else COLORS["candle_down"]
     marker = "^" if signal_type == "BUY" else "v"
     ax1.scatter(len(df)-1, df["close"].iloc[-1], color=marker_color, s=300, marker=marker, zorder=5, edgecolors='white')
@@ -189,18 +188,16 @@ def create_chart(df, pair, signal_type, reasons, ema9, ema21, macd_line, signal_
     emoji = "🟢" if signal_type == "BUY" else "🔴"
     ax1.set_title(f'{emoji} {pair} - {signal_type}', color=COLORS["text"], fontsize=14, fontweight='bold')
     
-    # MACD
     ax2 = axes[1]
     ax2.plot(x, macd_line.values, label="MACD", color=COLORS["macd"], linewidth=1)
     ax2.plot(x, signal_line.values, label="Signal", color=COLORS["signal"], linewidth=1)
     macd_hist = (macd_line - signal_line).values
-    colors = [COLORS["candle_up"] if v >= 0 else COLORS["candle_down"] for v in macd_hist]
-    ax2.bar(x, macd_hist, color=colors, alpha=0.5)
+    colors_hist = [COLORS["candle_up"] if v >= 0 else COLORS["candle_down"] for v in macd_hist]
+    ax2.bar(x, macd_hist, color=colors_hist, alpha=0.5)
     ax2.axhline(y=0, color='gray', linestyle='--', linewidth=0.5)
     ax2.set_ylabel("MACD", color=COLORS["text"])
     ax2.legend(loc="upper left", facecolor=COLORS["bg"], labelcolor=COLORS["text"])
     
-    # RSI
     ax3 = axes[2]
     ax3.plot(x, rsi.values, label="RSI", color=COLORS["rsi"], linewidth=1.5)
     ax3.axhline(y=70, color=COLORS["candle_down"], linestyle='--', linewidth=0.5)
@@ -225,67 +222,82 @@ def send_telegram_photo(photo, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
     files = {"photo": photo}
     data = {"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"}
-    requests.post(url, files=files, data=data)
+    response = requests.post(url, files=files, data=data)
+    return response.ok
 
-# ============ เช็คสัญญาณซ้ำ ============
+# ============ เช็คสัญญาณซ้ำ (แก้ใหม่) ============
 
-def is_duplicate_signal(pair, signal_type, reasons):
-    """เช็คว่าสัญญาณนี้ส่งไปแล้วหรือยัง"""
+def get_signal_key(pair, signal_type, reasons):
+    """สร้าง unique key สำหรับสัญญาณ"""
+    reasons_str = "|".join(sorted(reasons))
+    raw = f"{pair}_{signal_type}_{reasons_str}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+def can_send_signal(pair, signal_type, reasons):
+    """เช็คว่าส่งได้หรือไม่ (ไม่ซ้ำใน 60 นาที)"""
     global sent_signals
     
-    key = f"{pair}_{signal_type}"
-    reason_key = "_".join(sorted(reasons))
-    current_hour = get_thai_time().strftime('%Y-%m-%d-%H')
+    key = get_signal_key(pair, signal_type, reasons)
+    now = get_thai_time()
     
-    # ถ้าส่งไปแล้วในชั่วโมงเดียวกัน = ซ้ำ
+    # ลบสัญญาณเก่าที่เกิน 60 นาที
+    expired_keys = []
+    for k, v in sent_signals.items():
+        if now - v > timedelta(minutes=60):
+            expired_keys.append(k)
+    for k in expired_keys:
+        del sent_signals[k]
+    
+    # เช็คว่าส่งไปแล้วหรือยัง
     if key in sent_signals:
-        if sent_signals[key]["hour"] == current_hour and sent_signals[key]["reasons"] == reason_key:
-            return True
+        return False
     
     # บันทึกว่าส่งแล้ว
-    sent_signals[key] = {
-        "hour": current_hour,
-        "reasons": reason_key
-    }
-    return False
+    sent_signals[key] = now
+    return True
 
 # ============ Main Loop ============
 
 def check_all_pairs():
-    now = get_thai_time()
+    global is_running
     
-    if not is_market_open():
-        print(f"[{now.strftime('%H:%M')}] ตลาดปิด - ข้าม")
+    # ป้องกันรันซ้อน
+    if is_running:
+        print("Already running, skip...")
         return
     
-    print(f"[{now.strftime('%H:%M')}] Checking signals...")
+    is_running = True
+    now = get_thai_time()
     
-    for pair in PAIRS:
-        try:
-            df = get_forex_data(pair)
-            if df is None:
-                continue
-            
-            signals, price, rsi_val, ema9, ema21, macd_line, signal_line, rsi_series = analyze_signal(df)
-            
-            if not signals:
-                print(f"  {pair}: ไม่มีสัญญาณ")
-                continue
-            
-            # รวมสัญญาณที่เป็น BUY และ SELL แยกกัน
-            buy_reasons = [reason for sig_type, reason in signals if sig_type == "BUY"]
-            sell_reasons = [reason for sig_type, reason in signals if sig_type == "SELL"]
-            
-            # ส่ง BUY (ถ้ามี)
-            if buy_reasons:
-                if not is_duplicate_signal(pair, "BUY", buy_reasons):
-                    emoji = "🟢"
+    try:
+        if not is_market_open():
+            print(f"[{now.strftime('%H:%M')}] ตลาดปิด - ข้าม")
+            return
+        
+        print(f"[{now.strftime('%H:%M')}] Checking signals...")
+        
+        for pair in PAIRS:
+            try:
+                df = get_forex_data(pair)
+                if df is None:
+                    continue
+                
+                signals, price, rsi_val, ema9, ema21, macd_line, signal_line, rsi_series = analyze_signal(df)
+                
+                if not signals:
+                    print(f"  {pair}: ไม่มีสัญญาณ")
+                    continue
+                
+                # รวมสัญญาณ BUY และ SELL
+                buy_reasons = [reason for sig_type, reason in signals if sig_type == "BUY"]
+                sell_reasons = [reason for sig_type, reason in signals if sig_type == "SELL"]
+                
+                # ส่ง BUY
+                if buy_reasons and can_send_signal(pair, "BUY", buy_reasons):
                     reasons_text = "\n• ".join(buy_reasons)
-                    
                     chart = create_chart(df, pair, "BUY", buy_reasons, ema9, ema21, macd_line, signal_line, rsi_series)
                     
-                    caption = f"""
-⚡ <b>{emoji} BUY SIGNAL</b>
+                    caption = f"""⚡ <b>🟢 BUY SIGNAL</b>
 
 💱 คู่เงิน: <b>{pair}</b>
 💰 ราคา: {price:.5f}
@@ -296,24 +308,20 @@ def check_all_pairs():
 
 🕐 เวลา: {get_thai_time().strftime('%H:%M')}
 
-⚠️ <i>This is not financial advice</i>
-"""
-                    send_telegram_photo(chart, caption)
-                    print(f"  {pair}: ส่งสัญญาณ BUY")
-                    time.sleep(2)
-                else:
-                    print(f"  {pair}: BUY ส่งไปแล้ว (ข้าม)")
-            
-            # ส่ง SELL (ถ้ามี)
-            if sell_reasons:
-                if not is_duplicate_signal(pair, "SELL", sell_reasons):
-                    emoji = "🔴"
-                    reasons_text = "\n• ".join(sell_reasons)
+⚠️ <i>This is not financial advice</i>"""
                     
+                    if send_telegram_photo(chart, caption):
+                        print(f"  {pair}: ✅ ส่ง BUY")
+                    time.sleep(2)
+                elif buy_reasons:
+                    print(f"  {pair}: BUY ซ้ำ (ข้าม)")
+                
+                # ส่ง SELL
+                if sell_reasons and can_send_signal(pair, "SELL", sell_reasons):
+                    reasons_text = "\n• ".join(sell_reasons)
                     chart = create_chart(df, pair, "SELL", sell_reasons, ema9, ema21, macd_line, signal_line, rsi_series)
                     
-                    caption = f"""
-⚡ <b>{emoji} SELL SIGNAL</b>
+                    caption = f"""⚡ <b>🔴 SELL SIGNAL</b>
 
 💱 คู่เงิน: <b>{pair}</b>
 💰 ราคา: {price:.5f}
@@ -324,16 +332,19 @@ def check_all_pairs():
 
 🕐 เวลา: {get_thai_time().strftime('%H:%M')}
 
-⚠️ <i>This is not financial advice</i>
-"""
-                    send_telegram_photo(chart, caption)
-                    print(f"  {pair}: ส่งสัญญาณ SELL")
+⚠️ <i>This is not financial advice</i>"""
+                    
+                    if send_telegram_photo(chart, caption):
+                        print(f"  {pair}: ✅ ส่ง SELL")
                     time.sleep(2)
-                else:
-                    print(f"  {pair}: SELL ส่งไปแล้ว (ข้าม)")
-                
-        except Exception as e:
-            print(f"Error {pair}: {e}")
+                elif sell_reasons:
+                    print(f"  {pair}: SELL ซ้ำ (ข้าม)")
+                    
+            except Exception as e:
+                print(f"Error {pair}: {e}")
+    
+    finally:
+        is_running = False
 
 # ============ Main ============
 
