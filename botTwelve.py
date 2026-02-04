@@ -9,9 +9,9 @@ from datetime import datetime
 from io import BytesIO
 
 # ============ ตั้งค่า ============
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
-TWELVE_DATA_KEY = os.environ.get("TWELVE_DATA_KEY")
+TELEGRAM_TOKEN = "8578035505:AAFs-5jrH8-v3Zr9itQSVjKhiyFF_1U0iKg"
+CHAT_ID = "8404883319"
+TWELVE_DATA_KEY = "a624ba50c97f454f92c58f3cf8de1be9"
 
 PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "XAU/USD"]
 
