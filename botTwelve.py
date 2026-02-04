@@ -4,9 +4,9 @@ import pandas as pd
 import schedule
 import time
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 from datetime import datetime
 from io import BytesIO
+import pytz
 
 # ============ ตั้งค่า ============
 TELEGRAM_TOKEN = "8578035505:AAFs-5jrH8-v3Zr9itQSVjKhiyFF_1U0iKg"
@@ -14,6 +14,9 @@ CHAT_ID = "8404883319"
 TWELVE_DATA_KEY = "a624ba50c97f454f92c58f3cf8de1be9"
 
 PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "XAU/USD"]
+
+# Timezone ไทย
+TZ_THAI = pytz.timezone('Asia/Bangkok')
 
 # ============ สี Theme ============
 COLORS = {
@@ -29,18 +32,24 @@ COLORS = {
     "grid": "#333355",
 }
 
+# ============ ฟังก์ชันเวลาไทย ============
+
+def get_thai_time():
+    """ดึงเวลาไทยปัจจุบัน"""
+    return datetime.now(TZ_THAI)
+
 # ============ เช็คตลาดเปิด ============
 
 def is_market_open():
-    now = datetime.now()
+    now = get_thai_time()
     weekday = now.weekday()
     hour = now.hour
     
-    if weekday == 5:
+    if weekday == 5:  # เสาร์
         return False
-    if weekday == 6:
+    if weekday == 6:  # อาทิตย์
         return False
-    if weekday == 0 and hour < 4:
+    if weekday == 0 and hour < 4:  # จันทร์ก่อน 04:00
         return False
     
     return True
@@ -120,16 +129,19 @@ def analyze_signal(df):
     
     signals = []
     
+    # EMA Crossover
     if ema9.iloc[-2] < ema21.iloc[-2] and ema9.iloc[-1] > ema21.iloc[-1]:
         signals.append(("BUY", "EMA 9/21 Golden Cross"))
     elif ema9.iloc[-2] > ema21.iloc[-2] and ema9.iloc[-1] < ema21.iloc[-1]:
         signals.append(("SELL", "EMA 9/21 Death Cross"))
     
+    # RSI
     if curr_rsi < 30:
         signals.append(("BUY", f"RSI Oversold ({curr_rsi:.1f})"))
     elif curr_rsi > 70:
         signals.append(("SELL", f"RSI Overbought ({curr_rsi:.1f})"))
     
+    # MACD
     if macd_line.iloc[-2] < signal_line.iloc[-2] and macd_line.iloc[-1] > signal_line.iloc[-1]:
         signals.append(("BUY", "MACD Bullish Cross"))
     elif macd_line.iloc[-2] > signal_line.iloc[-2] and macd_line.iloc[-1] < signal_line.iloc[-1]:
@@ -216,11 +228,13 @@ def send_telegram_photo(photo, caption):
 # ============ Main Loop ============
 
 def check_all_pairs():
+    now = get_thai_time()
+    
     if not is_market_open():
-        print(f"[{datetime.now().strftime('%H:%M')}] ตลาดปิด - ข้าม")
+        print(f"[{now.strftime('%H:%M')}] ตลาดปิด - ข้าม")
         return
     
-    print(f"[{datetime.now().strftime('%H:%M')}] Checking signals...")
+    print(f"[{now.strftime('%H:%M')}] Checking signals...")
     
     for pair in PAIRS:
         try:
@@ -246,7 +260,7 @@ def check_all_pairs():
 💰 ราคา: {price:.5f}
 📊 RSI: {rsi_val:.1f}
 📝 เหตุผล: {reason}
-🕐 เวลา: {datetime.now().strftime('%H:%M')}
+🕐 เวลา: {get_thai_time().strftime('%H:%M')}
 
 ⚠️ <i>This is not financial advice</i>
 """
@@ -257,8 +271,14 @@ def check_all_pairs():
         except Exception as e:
             print(f"Error {pair}: {e}")
 
+# ============ Main ============
+
 if __name__ == "__main__":
-    print("🚀 Forex Signal Bot Started!")
+    print(f"🚀 Forex Signal Bot Started!")
+    print(f"📅 Thai Time: {get_thai_time().strftime('%Y-%m-%d %H:%M')}")
+    print(f"⏰ Check every 20 minutes")
+    print(f"💱 Pairs: {', '.join(PAIRS)}")
+    print("-" * 40)
     
     check_all_pairs()
     
