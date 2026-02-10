@@ -4,12 +4,11 @@ import pandas as pd
 import schedule
 import time
 import matplotlib.pyplot as plt
-import pytz
-import hashlib  # <--- เพิ่ม: ต้องมีเพื่อสร้าง Key
-from datetime import datetime, timedelta # <--- เพิ่ม: ต้องมี timedelta
+from datetime import datetime
 from io import BytesIO
+import pytz
 
-# ============ ตั้งค่า (อย่าลืมใส่ Key ของคุณ) ============
+# ============ ตั้งค่า ============
 TELEGRAM_TOKEN = "8578035505:AAFs-5jrH8-v3Zr9itQSVjKhiyFF_1U0iKg"
 CHAT_ID = "8404883319"
 TWELVE_DATA_KEY = "a624ba50c97f454f92c58f3cf8de1be9"
@@ -18,7 +17,7 @@ PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "XAU/USD"]
 
 TZ_THAI = pytz.timezone('Asia/Bangkok')
 
-# เก็บสัญญาณที่ส่งไปแล้ว (ป้องกันส่งซ้ำ) {key: timestamp}
+# เก็บสัญญาณที่ส่งไปแล้ว (ป้องกันส่งซ้ำ)
 sent_signals = {}
 
 # Lock ป้องกันรันซ้อน
@@ -38,7 +37,7 @@ COLORS = {
     "grid": "#333355",
 }
 
-# ============ ฟังก์ชัน Utility ============
+# ============ ฟังก์ชันเวลาไทย ============
 
 def get_thai_time():
     return datetime.now(TZ_THAI)
@@ -48,13 +47,10 @@ def is_market_open():
     weekday = now.weekday()
     hour = now.hour
     
-    # เสาร์ (5) - ปิด
     if weekday == 5:
         return False
-    # อาทิตย์ (6) - ปิด
     if weekday == 6:
         return False
-    # จันทร์ (0) - เปิดหลังตี 4
     if weekday == 0 and hour < 4:
         return False
     
@@ -73,11 +69,11 @@ def get_forex_data(symbol, interval="15min", outputsize=50):
         response = requests.get(url, params=params)
         data = response.json()
     except Exception as e:
-        print(f"  ❌ {symbol}: Request error - {e}")
+        print(f"  {symbol}: Request error - {e}")
         return None
     
     if "values" not in data:
-        print(f"  ❌ {symbol}: ไม่มีข้อมูล - {data.get('message', 'Unknown error')}")
+        print(f"  {symbol}: ไม่มีข้อมูล - {data.get('message', 'Unknown error')}")
         return None
     
     rows = []
@@ -93,15 +89,13 @@ def get_forex_data(symbol, interval="15min", outputsize=50):
         except (ValueError, KeyError, TypeError):
             continue
     
-    if len(rows) < 30: # เพิ่มจำนวนขั้นต่ำนิดหน่อยเพื่อให้ EMA คำนวณแม่นขึ้น
-        print(f"  ⚠️ {symbol}: ข้อมูลไม่พอ ({len(rows)} rows)")
+    if len(rows) < 20:
+        print(f"  {symbol}: ข้อมูลไม่พอ ({len(rows)} rows)")
         return None
     
     df = pd.DataFrame(rows)
     df = df.iloc[::-1].reset_index(drop=True)
     return df
-
-# ============ Indicator Calculations ============
 
 def calculate_ema(data, period):
     return data.ewm(span=period, adjust=False).mean()
@@ -120,8 +114,6 @@ def calculate_macd(data):
     signal_line = calculate_ema(macd_line, 9)
     return macd_line, signal_line
 
-# ============ Signal Analysis ============
-
 def analyze_signal(df, pair):
     close = df["close"]
     
@@ -137,47 +129,51 @@ def analyze_signal(df, pair):
     curr_macd = macd_line.iloc[-1]
     curr_signal = signal_line.iloc[-1]
     
-    # Debug info
-    print(f"  🔍 {pair}: Price: {current_price:.4f} | RSI: {curr_rsi:.1f}")
+    # แสดง Debug ทุกค่า
+    print(f"  {pair}:")
+    print(f"    Price: {current_price:.5f}")
+    print(f"    EMA9: {curr_ema9:.5f}, EMA21: {curr_ema21:.5f}, Diff: {(curr_ema9-curr_ema21):.5f}")
+    print(f"    RSI: {curr_rsi:.1f}")
+    print(f"    MACD: {curr_macd:.5f}, Signal: {curr_signal:.5f}, Diff: {(curr_macd-curr_signal):.5f}")
     
     signals = []
     
-    # 1. EMA Crossover
+    # ===== EMA Crossover =====
     if ema9.iloc[-2] < ema21.iloc[-2] and curr_ema9 > curr_ema21:
         signals.append(("BUY", "EMA 9/21 Golden Cross"))
     elif ema9.iloc[-2] > ema21.iloc[-2] and curr_ema9 < curr_ema21:
         signals.append(("SELL", "EMA 9/21 Death Cross"))
     
-    # 2. EMA Trend (Price Position)
+    # ===== EMA Trend (เพิ่มใหม่ - ผ่อนปรน) =====
+    # ถ้า EMA9 > EMA21 อยู่แล้ว และ ราคาอยู่เหนือทั้งสอง = Bullish
     elif curr_ema9 > curr_ema21 and current_price > curr_ema9:
-        signals.append(("BUY", "Trend Bullish (Price > EMA9 > EMA21)"))
+        signals.append(("BUY", "Price above EMA9 > EMA21 (Bullish)"))
+    # ถ้า EMA9 < EMA21 อยู่แล้ว และ ราคาอยู่ใต้ทั้งสอง = Bearish
     elif curr_ema9 < curr_ema21 and current_price < curr_ema9:
-        signals.append(("SELL", "Trend Bearish (Price < EMA9 < EMA21)"))
+        signals.append(("SELL", "Price below EMA9 < EMA21 (Bearish)"))
     
-    # 3. RSI Conditions
+    # ===== RSI =====
     if curr_rsi < 30:
         signals.append(("BUY", f"RSI Oversold ({curr_rsi:.1f})"))
     elif curr_rsi > 70:
         signals.append(("SELL", f"RSI Overbought ({curr_rsi:.1f})"))
     
-    # 4. MACD Crossover
+    # ===== MACD Crossover =====
     if macd_line.iloc[-2] < signal_line.iloc[-2] and curr_macd > curr_signal:
         signals.append(("BUY", "MACD Bullish Cross"))
     elif macd_line.iloc[-2] > signal_line.iloc[-2] and curr_macd < curr_signal:
         signals.append(("SELL", "MACD Bearish Cross"))
     
-    # 5. MACD Momentum
+    # ===== MACD Momentum (เพิ่มใหม่ - ผ่อนปรน) =====
     macd_diff = curr_macd - curr_signal
     if macd_diff > 0 and curr_macd > 0:
         signals.append(("BUY", f"MACD Bullish Momentum"))
     elif macd_diff < 0 and curr_macd < 0:
         signals.append(("SELL", f"MACD Bearish Momentum"))
     
-    print(f"    👉 Found {len(signals)} signals")
+    print(f"    Signals: {len(signals)}")
     
     return signals, current_price, curr_rsi, ema9, ema21, macd_line, signal_line, rsi
-
-# ============ Chart & Telegram ============
 
 def create_chart(df, pair, signal_type, reasons, ema9, ema21, macd_line, signal_line, rsi):
     fig, axes = plt.subplots(3, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [3, 1, 1]})
@@ -192,19 +188,16 @@ def create_chart(df, pair, signal_type, reasons, ema9, ema21, macd_line, signal_
     
     x = range(len(df))
     
-    # Plot 1: Price & EMA
     ax1 = axes[0]
     ax1.plot(x, df["close"].values, label="Price", color=COLORS["text"], linewidth=1.5)
     ax1.plot(x, ema9.values, label="EMA 9", color=COLORS["ema_fast"], linewidth=1)
     ax1.plot(x, ema21.values, label="EMA 21", color=COLORS["ema_slow"], linewidth=1)
     
-    # Candles (Simplified)
     for i in range(len(df)):
         color = COLORS["candle_up"] if df["close"].iloc[i] >= df["open"].iloc[i] else COLORS["candle_down"]
         ax1.plot([i, i], [df["low"].iloc[i], df["high"].iloc[i]], color=color, linewidth=1)
         ax1.plot([i, i], [df["open"].iloc[i], df["close"].iloc[i]], color=color, linewidth=3)
     
-    # Marker
     marker_color = COLORS["candle_up"] if signal_type == "BUY" else COLORS["candle_down"]
     marker = "^" if signal_type == "BUY" else "v"
     ax1.scatter(len(df)-1, df["close"].iloc[-1], color=marker_color, s=300, marker=marker, zorder=5, edgecolors='white')
@@ -215,7 +208,6 @@ def create_chart(df, pair, signal_type, reasons, ema9, ema21, macd_line, signal_
     emoji = "🟢" if signal_type == "BUY" else "🔴"
     ax1.set_title(f'{emoji} {pair} - {signal_type}', color=COLORS["text"], fontsize=14, fontweight='bold')
     
-    # Plot 2: MACD
     ax2 = axes[1]
     ax2.plot(x, macd_line.values, label="MACD", color=COLORS["macd"], linewidth=1)
     ax2.plot(x, signal_line.values, label="Signal", color=COLORS["signal"], linewidth=1)
@@ -224,8 +216,8 @@ def create_chart(df, pair, signal_type, reasons, ema9, ema21, macd_line, signal_
     ax2.bar(x, macd_hist, color=colors_hist, alpha=0.5)
     ax2.axhline(y=0, color='gray', linestyle='--', linewidth=0.5)
     ax2.set_ylabel("MACD", color=COLORS["text"])
+    ax2.legend(loc="upper left", facecolor=COLORS["bg"], labelcolor=COLORS["text"])
     
-    # Plot 3: RSI
     ax3 = axes[2]
     ax3.plot(x, rsi.values, label="RSI", color=COLORS["rsi"], linewidth=1.5)
     ax3.axhline(y=70, color=COLORS["candle_down"], linestyle='--', linewidth=0.5)
@@ -233,6 +225,7 @@ def create_chart(df, pair, signal_type, reasons, ema9, ema21, macd_line, signal_
     ax3.fill_between(x, 30, 70, alpha=0.1, color='gray')
     ax3.set_ylabel("RSI", color=COLORS["text"])
     ax3.set_ylim(0, 100)
+    ax3.legend(loc="upper left", facecolor=COLORS["bg"], labelcolor=COLORS["text"])
     
     plt.tight_layout()
     
@@ -246,25 +239,17 @@ def create_chart(df, pair, signal_type, reasons, ema9, ema21, macd_line, signal_
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
-    try:
-        response = requests.post(url, data=data)
-        return response.ok
-    except:
-        return False
+    response = requests.post(url, data=data)
+    return response.ok
 
 def send_telegram_photo(photo, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
     files = {"photo": photo}
     data = {"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"}
-    try:
-        response = requests.post(url, files=files, data=data)
-        return response.ok
-    except Exception as e:
-        print(f"    ❌ Telegram Error: {e}")
-        return False
+    response = requests.post(url, files=files, data=data)
+    return response.ok
 
 def get_signal_key(pair, signal_type, reasons):
-    # รวมเหตุผลเพื่อสร้าง Key ไม่ซ้ำ (ถ้าเหตุผลเปลี่ยน ก็ส่งใหม่)
     reasons_str = "|".join(sorted(reasons))
     raw = f"{pair}_{signal_type}_{reasons_str}"
     return hashlib.md5(raw.encode()).hexdigest()
@@ -275,7 +260,6 @@ def can_send_signal(pair, signal_type, reasons):
     key = get_signal_key(pair, signal_type, reasons)
     now = get_thai_time()
     
-    # ล้างข้อมูลเก่าเกิน 60 นาที
     expired_keys = []
     for k, v in sent_signals.items():
         if now - v > timedelta(minutes=60):
@@ -283,22 +267,17 @@ def can_send_signal(pair, signal_type, reasons):
     for k in expired_keys:
         del sent_signals[k]
     
-    # ถ้า Key นี้เคยส่งไปแล้วใน 60 นาทีก่อน -> ไม่ส่งซ้ำ
     if key in sent_signals:
-        print(f"    ⏳ {pair} {signal_type}: ส่งไปแล้ว (Skip)")
         return False
     
-    # บันทึกเวลาที่ส่ง
     sent_signals[key] = now
     return True
-
-# ============ Main Process ============
 
 def check_all_pairs():
     global is_running
     
     if is_running:
-        print("⚠️ Bot is already running, skipping this loop.")
+        print("Already running, skip...")
         return
     
     is_running = True
@@ -306,11 +285,11 @@ def check_all_pairs():
     
     try:
         if not is_market_open():
-            print(f"[{now.strftime('%H:%M')}] 💤 Market Closed")
+            print(f"[{now.strftime('%H:%M')}] ตลาดปิด - ข้าม")
             return
         
-        print(f"\n[{now.strftime('%H:%M')}] 🔄 Checking Signals...")
-        print("-" * 50)
+        print(f"\n[{now.strftime('%H:%M')}] Checking signals...")
+        print("=" * 50)
         
         for pair in PAIRS:
             try:
@@ -323,63 +302,70 @@ def check_all_pairs():
                 if not signals:
                     continue
                 
-                # แยก BUY และ SELL (เผื่อกรณีสัญญาณขัดแย้ง ส่งมันทั้งคู่เลยให้คนตัดสินใจ)
                 buy_reasons = [reason for sig_type, reason in signals if sig_type == "BUY"]
                 sell_reasons = [reason for sig_type, reason in signals if sig_type == "SELL"]
                 
-                # --- จัดการ BUY ---
-                if buy_reasons:
-                    if can_send_signal(pair, "BUY", buy_reasons):
-                        reasons_text = "\n• ".join(buy_reasons)
-                        chart = create_chart(df, pair, "BUY", buy_reasons, ema9, ema21, macd_line, signal_line, rsi_series)
-                        
-                        caption = f"""⚡ <b>🟢 BUY SIGNAL</b>\n\n💱 Pair: <b>{pair}</b>\n💰 Price: {price:.5f}\n📊 RSI: {rsi_val:.1f}\n\n📝 Reasons:\n• {reasons_text}\n\n🕐 Time: {get_thai_time().strftime('%H:%M')}"""
-                        
-                        if send_telegram_photo(chart, caption):
-                            print(f"    ✅ {pair}: Sent BUY")
-                        else:
-                            print(f"    ❌ {pair}: Failed to send BUY")
-                        time.sleep(2)
+                if buy_reasons and can_send_signal(pair, "BUY", buy_reasons):
+                    reasons_text = "\n• ".join(buy_reasons)
+                    chart = create_chart(df, pair, "BUY", buy_reasons, ema9, ema21, macd_line, signal_line, rsi_series)
+                    
+                    caption = f"""⚡ <b>🟢 BUY SIGNAL</b>
+
+💱 คู่เงิน: <b>{pair}</b>
+💰 ราคา: {price:.5f}
+📊 RSI: {rsi_val:.1f}
+
+📝 เหตุผล:
+- {reasons_text}
+
+🕐 เวลา: {get_thai_time().strftime('%H:%M')}
+
+⚠️ <i>This is not financial advice</i>"""
+                    
+                    if send_telegram_photo(chart, caption):
+                        print(f"    ✅ ส่ง BUY สำเร็จ")
+                    time.sleep(2)
                 
-                # --- จัดการ SELL ---
-                if sell_reasons:
-                    if can_send_signal(pair, "SELL", sell_reasons):
-                        reasons_text = "\n• ".join(sell_reasons)
-                        chart = create_chart(df, pair, "SELL", sell_reasons, ema9, ema21, macd_line, signal_line, rsi_series)
-                        
-                        caption = f"""⚡ <b>🔴 SELL SIGNAL</b>\n\n💱 Pair: <b>{pair}</b>\n💰 Price: {price:.5f}\n📊 RSI: {rsi_val:.1f}\n\n📝 Reasons:\n• {reasons_text}\n\n🕐 Time: {get_thai_time().strftime('%H:%M')}"""
-                        
-                        if send_telegram_photo(chart, caption):
-                            print(f"    ✅ {pair}: Sent SELL")
-                        else:
-                            print(f"    ❌ {pair}: Failed to send SELL")
-                        time.sleep(2)
+                if sell_reasons and can_send_signal(pair, "SELL", sell_reasons):
+                    reasons_text = "\n• ".join(sell_reasons)
+                    chart = create_chart(df, pair, "SELL", sell_reasons, ema9, ema21, macd_line, signal_line, rsi_series)
+                    
+                    caption = f"""⚡ <b>🔴 SELL SIGNAL</b>
+
+💱 คู่เงิน: <b>{pair}</b>
+💰 ราคา: {price:.5f}
+📊 RSI: {rsi_val:.1f}
+
+📝 เหตุผล:
+- {reasons_text}
+
+🕐 เวลา: {get_thai_time().strftime('%H:%M')}
+
+⚠️ <i>This is not financial advice</i>"""
+                    
+                    if send_telegram_photo(chart, caption):
+                        print(f"    ✅ ส่ง SELL สำเร็จ")
+                    time.sleep(2)
                     
             except Exception as e:
-                # Print Error แบบละเอียด
-                print(f"    ❌ Error processing {pair}: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"Error {pair}: {e}")
         
         print("=" * 50)
     
-    except Exception as main_e:
-        print(f"🔥 Critical Error: {main_e}")
     finally:
         is_running = False
 
 if __name__ == "__main__":
     print(f"🚀 Forex Signal Bot Started!")
     print(f"📅 Thai Time: {get_thai_time().strftime('%Y-%m-%d %H:%M')}")
+    print(f"🏪 Market Open: {is_market_open()}")
+    print(f"⏰ Check every 20 minutes")
     print(f"💱 Pairs: {', '.join(PAIRS)}")
     
-    # ส่งข้อความทดสอบตอนเริ่ม
     send_telegram_message(f"🚀 Bot Started!\n📅 {get_thai_time().strftime('%Y-%m-%d %H:%M')}")
     
-    # รันรอบแรกทันที
     check_all_pairs()
     
-    # ตั้งเวลาทำงานทุก 20 นาที
     schedule.every(20).minutes.do(check_all_pairs)
     
     while True:
