@@ -3,3 +3,5 @@ pandas
 schedule
 matplotlib
 pytz
+gspread
+oauth2client
