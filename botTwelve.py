@@ -20,6 +20,51 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 TWELVE_DATA_KEY = os.environ.get("TWELVE_DATA_KEY")
 
+print("🔍 --- STARTING VARIABLE CHECK ---")
+
+# 1. เช็ค TELEGRAM_TOKEN
+token = os.environ.get("TELEGRAM_TOKEN")
+if token:
+    print(f"✅ TELEGRAM_TOKEN: Found (Length: {len(token)})")
+else:
+    print("❌ TELEGRAM_TOKEN: NOT FOUND")
+
+# 2. เช็ค CHAT_ID
+chat_id = os.environ.get("CHAT_ID")
+if chat_id:
+    print(f"✅ CHAT_ID: Found (Value: {chat_id})")
+else:
+    print("❌ CHAT_ID: NOT FOUND")
+
+# 3. เช็ค TWELVE_DATA_KEY
+tw_key = os.environ.get("TWELVE_DATA_KEY")
+if tw_key:
+    print(f"✅ TWELVE_DATA_KEY: Found (Length: {len(tw_key)})")
+else:
+    print("❌ TWELVE_DATA_KEY: NOT FOUND")
+
+# 4. เช็ค GOOGLE_CREDENTIALS (ตัวปราบเซียน)
+google_creds = os.environ.get("GOOGLE_CREDENTIALS")
+if google_creds:
+    print(f"✅ GOOGLE_CREDENTIALS: Found (Length: {len(google_creds)})")
+    
+    # ลองแปลงร่างเป็น JSON ดูว่าพังไหม?
+    try:
+        creds_json = json.loads(google_creds)
+        print("   ✨ JSON Decode: SUCCESS (Valid JSON Format)")
+        # เช็คว่ามีอีเมลข้างในไหม (เพื่อความชัวร์)
+        if "client_email" in creds_json:
+            print(f"   📧 Client Email: {creds_json['client_email']}")
+        else:
+            print("   ⚠️ JSON Decode Passed, but 'client_email' not found inside.")
+    except json.JSONDecodeError as e:
+        print(f"   💀 JSON Decode Error: {e}")
+        print("   💡 คำแนะนำ: คุณอาจจะก๊อปปี้มาไม่ครบ หรือมีช่องว่างเกิน ให้เช็คใน Railway Variables อีกที")
+else:
+    print("❌ GOOGLE_CREDENTIALS: NOT FOUND")
+
+print("🔍 --- END VARIABLE CHECK ---")
+
 # ตั้งค่า Google Sheets
 USE_GOOGLE_SHEET = True
 SHEET_NAME = "TradeLogs"  # ชื่อ Google Sheet ที่สร้างไว้
