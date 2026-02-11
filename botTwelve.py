@@ -5,7 +5,7 @@ import pandas as pd
 import schedule
 import time
 import matplotlib
-matplotlib.use('Agg') # ป้องกัน Error บน Server ที่ไม่มีหน้าจอ
+matplotlib.use('Agg') # ป้องกัน Error บน Server ไม่มีหน้าจอ
 import matplotlib.pyplot as plt
 import pytz
 import hashlib
@@ -18,7 +18,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from flask import Flask
 from threading import Thread
 
-# ============ ส่วน Web Server (เพื่อให้ Railway ไม่ปิดบอท) ============
+# ============ ส่วน Web Server (Keep Alive) ============
 app = Flask('')
 
 @app.route('/')
@@ -26,7 +26,6 @@ def home():
     return "I'm alive! Gold Bot is running..."
 
 def run_web():
-    # Railway จะส่ง PORT มาให้ทาง Environment Variable
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -34,7 +33,7 @@ def keep_alive():
     t = Thread(target=run_web)
     t.start()
 
-# ============ การตั้งค่า (Configuration) ============
+# ============ Configuration ============
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 TWELVE_DATA_KEY = os.environ.get("TWELVE_DATA_KEY")
@@ -62,7 +61,7 @@ def sync_to_google_sheet():
     if not USE_GOOGLE_SHEET: return
     json_creds = os.environ.get(GOOGLE_ENV_VAR)
     if not json_creds:
-        print("⚠️ No Google Credentials found in Environment Variables.")
+        print("⚠️ No Google Credentials found.")
         return
     if not os.path.exists(TRADES_FILE): return
 
@@ -72,7 +71,6 @@ def sync_to_google_sheet():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         
-        # พยายามเปิด Sheet ถ้าไม่เจอให้ข้าม
         try:
             sheet = client.open(SHEET_NAME).sheet1
         except:
@@ -158,22 +156,27 @@ def check_open_trades(current_price):
             writer.writerows(trades)
         sync_to_google_sheet()
 
-# ============ Indicators & Chart ============
+# ============ Indicators (Fixed MACD Error) ============
 def calculate_ema(data, period): return data.ewm(span=period, adjust=False).mean()
+
 def calculate_rsi(data, period=14):
     delta = data.diff()
     gain = delta.where(delta > 0, 0).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
+
 def calculate_macd(data):
-    ema12, ema26 = calculate_ema(data, 12), calculate_ema(data, 26)
-    macd, signal = ema12 - ema26, calculate_ema(macd, 9)
+    ema12 = calculate_ema(data, 12)
+    ema26 = calculate_ema(data, 26)
+    macd = ema12 - ema26           # แยกบรรทัดออกมา
+    signal = calculate_ema(macd, 9) # คำนวณ signal ทีหลัง
     return macd, signal
 
 def analyze_signal(df):
     close = df["close"]
-    ema9, ema21 = calculate_ema(close, 9), calculate_ema(close, 21)
+    ema9 = calculate_ema(close, 9)
+    ema21 = calculate_ema(close, 21)
     rsi = calculate_rsi(close)
     macd, signal = calculate_macd(close)
     curr_price = close.iloc[-1]
@@ -184,12 +187,12 @@ def analyze_signal(df):
     if ema9.iloc[-2] < ema21.iloc[-2] and ema9.iloc[-1] > ema21.iloc[-1]: signals.append(("BUY", "EMA Golden Cross"))
     elif ema9.iloc[-2] > ema21.iloc[-2] and ema9.iloc[-1] < ema21.iloc[-1]: signals.append(("SELL", "EMA Death Cross"))
     
-    # RSI Condition (ปรับได้ตามชอบ)
     if rsi.iloc[-1] < 25: signals.append(("BUY", f"RSI Oversold ({rsi.iloc[-1]:.1f})"))
     elif rsi.iloc[-1] > 75: signals.append(("SELL", f"RSI Overbought ({rsi.iloc[-1]:.1f})"))
     
     return signals, curr_price, rsi.iloc[-1], ema9, ema21, macd, signal, rsi
 
+# ============ Chart Generation ============
 def create_chart(df, signal_type, reasons, ema9, ema21, macd, signal, rsi):
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), gridspec_kw={'height_ratios': [3, 1, 1]})
     fig.patch.set_facecolor(COLORS["bg"])
@@ -211,6 +214,7 @@ def create_chart(df, signal_type, reasons, ema9, ema21, macd, signal, rsi):
     buf = BytesIO(); plt.savefig(buf, format='png', dpi=100, facecolor=COLORS["bg"]); buf.seek(0); plt.close()
     return buf
 
+# ============ Telegram ============
 def send_telegram_photo(photo, caption):
     try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto", files={"photo": photo}, data={"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"}); return True
     except: return False
@@ -260,13 +264,10 @@ def check_gold():
     finally: is_running = False
 
 if __name__ == "__main__":
-    # 1. เริ่ม Web Server หลอกๆ ก่อน
     keep_alive()
-    
-    print("🚀 Gold Bot Started on Railway (with Web Server)")
+    print("🚀 Gold Bot Started on Railway (Fixed MACD)")
     send_telegram_message("🚀 Gold Bot Started on Railway!")
     
-    # 2. รันบอทเทรด
     check_gold()
     schedule.every(15).minutes.do(check_gold)
     
